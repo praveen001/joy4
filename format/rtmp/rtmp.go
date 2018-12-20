@@ -8,16 +8,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/nareix/joy4/utils/bits/pio"
-	"github.com/nareix/joy4/av"
-	"github.com/nareix/joy4/av/avutil"
-	"github.com/nareix/joy4/format/flv"
-	"github.com/nareix/joy4/format/flv/flvio"
 	"io"
 	"net"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/nareix/joy4/av"
+	"github.com/nareix/joy4/av/avutil"
+	"github.com/nareix/joy4/format/flv"
+	"github.com/nareix/joy4/format/flv/flvio"
+	"github.com/nareix/joy4/utils/bits/pio"
 )
 
 var Debug bool
@@ -292,6 +293,10 @@ func (self *Conn) pollAVTag() (tag flvio.Tag, err error) {
 	}
 }
 
+func (self *Conn) GetReader() *bufio.Reader {
+	return self.bufr
+}
+
 func (self *Conn) pollMsg() (err error) {
 	self.gotmsg = false
 	self.gotcommand = false
@@ -353,17 +358,17 @@ var CodecTypes = flv.CodecTypes
 
 func (self *Conn) writeBasicConf() (err error) {
 	// > SetChunkSize
-	if err = self.writeSetChunkSize(1024 * 1024 * 128); err != nil {
+	if err = self.writeSetChunkSize(4096); err != nil {
 		return
 	}
 	// > WindowAckSize
-	if err = self.writeWindowAckSize(5000000); err != nil {
-		return
-	}
-	// > SetPeerBandwidth
-	if err = self.writeSetPeerBandwidth(5000000, 2); err != nil {
-		return
-	}
+	// if err = self.writeWindowAckSize(5000000); err != nil {
+	// 	return
+	// }
+	// // > SetPeerBandwidth
+	// if err = self.writeSetPeerBandwidth(5000000, 2); err != nil {
+	// 	return
+	// }
 	return
 }
 
@@ -597,7 +602,6 @@ func (self *Conn) writeConnect(path string) (err error) {
 	if err = self.writeBasicConf(); err != nil {
 		return
 	}
-
 	// > connect("app")
 	if Debug {
 		fmt.Printf("rtmp: > connect('%s') host=%s\n", path, self.URL.Host)
@@ -640,14 +644,15 @@ func (self *Conn) writeConnect(path string) (err error) {
 				break
 			}
 		} else {
-			if self.msgtypeid == msgtypeidWindowAckSize {
-				if len(self.msgdata) == 4 {
-					self.readAckSize = pio.U32BE(self.msgdata)
-				}
-				if err = self.writeWindowAckSize(0xffffffff); err != nil {
-					return
-				}
-			}
+			// here
+			// if self.msgtypeid == msgtypeidWindowAckSize {
+			// 	if len(self.msgdata) == 4 {
+			// 		self.readAckSize = pio.U32BE(self.msgdata)
+			// 	}
+			// 	if err = self.writeWindowAckSize(0xffffffff); err != nil {
+			// 		return
+			// 	}
+			// }
 		}
 	}
 
@@ -657,11 +662,16 @@ func (self *Conn) writeConnect(path string) (err error) {
 func (self *Conn) connectPublish() (err error) {
 	connectpath, publishpath := SplitPath(self.URL)
 
-	if err = self.writeConnect(connectpath); err != nil {
+	if err = self.writeConnect(connectpath + "/" + publishpath); err != nil {
 		return
 	}
 
 	transid := 2
+
+	if err = self.writeCommandMsg(3, 0, "releaseStream", transid, nil, publishpath); err != nil {
+		return
+	}
+	transid++
 
 	// > createStream()
 	if Debug {
@@ -704,6 +714,23 @@ func (self *Conn) connectPublish() (err error) {
 
 	if err = self.flushWrite(); err != nil {
 		return
+	}
+
+	for {
+		if err = self.pollMsg(); err != nil {
+			return
+		}
+		if self.gotcommand {
+			// < _result(avmsgsid) of createStream
+			if self.commandname == "onStatus" {
+				var ok bool
+				if ok, self.avmsgsid = self.checkCreateStreamResult(); !ok {
+					err = fmt.Errorf("rtmp: publishStream command failed")
+					return
+				}
+				break
+			}
+		}
 	}
 
 	self.writing = true
@@ -819,7 +846,7 @@ func (self *Conn) prepare(stage int, flags int) (err error) {
 					return
 				}
 			} else {
-				if flags == prepareReading {
+				if flags == prepareReading && false {
 					if err = self.connectPlay(); err != nil {
 						return
 					}
@@ -978,7 +1005,6 @@ func (self *Conn) writeAMF0Msg(msgtypeid uint8, csid, msgsid uint32, args ...int
 	for _, arg := range args {
 		n += flvio.FillAMF0Val(b[n:], arg)
 	}
-
 	_, err = self.bufw.Write(b[:n])
 	return
 }
